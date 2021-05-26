@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <style>
+body {
+  font-family: sans-serif;
+  padding: 20px;
+}
+svg {
+  border: 1px solid #000;
+}
+.col {
+  float: left;
+  width: 45%;
+}
+.purple {
+  background: linear-gradient(to right, rgba(255, 255, 255, 0), rgba(0, 0, 139, 0.81));
+  color: transparent;
+}
+label {
+  display: block;
+  cursor: pointer;
+}
+    </style>
+  </head>
+  <body>
+    <h2>Hi Districtr fan,</h2>
+    <div class="col">
+      <p>
+        We're going to try to redesign Districtr's map coloring to better visualize race, ethnicity, and subgroup.
+        <ul>
+          <li>On states with a < 10% minority, we would like to see the highest concentrations of that population.</li>
+          <li>In cities with many neighborhoods, we would like to find the most Korean, Cuban, etc. areas.</li>
+        </ul>
+      </p>
+    </div>
+    <div class="col">
+      Color by
+      <select id="racecat">
+        <option value="B03002_001E">Total population</option>
+        <option value="B03002_003E">White</option>
+        <option value="B03002_004E">Black</option>
+        <option value="B03002_012E">Hispanic</option>
+        <option value="B03002_005E">American Indian</option>
+        <option value="B03002_006E">Asian</option>
+        <option value="B03002_007E">Hawaii / Pacific Islander</option>
+        <option value="B03002_009E">2+ Races</option>
+        <option value="B03002_008E">Other</option>
+      </select>
+      <br/>
+      --
+      <br/>
+      When a state is below <input id="thresh" type="number" value="10"/>% of one group,
+      <br/>
+      Color: <span class="purple" width="250">Test Test Test Test Test</span>
+      <br/>
+      AND
+      <label onclick="selectRule('multiply')">
+        <input type="radio" name="mino" checked/>
+        multiply all by <input id="multiplier" type="number" value="1"/>
+      </label>
+      <label onclick="selectRule('statewide')">
+        <input type="radio" name="mino"/>
+        show all above statewide %
+      </label>
+      <label onclick="selectRule('max')">
+        <input type="radio" name="mino"/>
+        scale all to statewide max %
+      </label>
+    </div>
+    <svg id="map" width="1200" height="610">
+    </svg>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/6.7.0/d3.min.js" integrity="sha512-cd6CHE+XWDQ33ElJqsi0MdNte3S+bQY819f7p3NUHgwQQLXSKjE4cPZTeGNI+vaxZynk1wVU3hoHmow3m089wA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script>
+const key = window.location.search.split("key=")[1].split("&")[0];
+const cols = ["B03002_001E","B03002_003E","B03002_004E","B03002_005E","B03002_006E","B03002_007E","B03002_008E","B03002_009E","B03002_012E"];
+let census = { statewide: {} },
+    selectCol = "B03002_001E",
+    activeRule = "multiply",
+    basegeo = { features: [] };
+
+document.getElementById("racecat").onchange = (e) => {
+  selectCol = e.target.value;
+  drawmap();
+};
+document.getElementById("thresh").oninput = drawmap;
+document.getElementById("multiplier").oninput = drawmap;
+
+const path = d3.geoPath(d3.geoAlbersUsa()
+    .scale(40000)
+    .translate([-12300, 4900]));
+const svg = d3.select("svg")
+    .attr("viewBox", [0, 0, 975, 610]);
+
+function drawmap() {
+
+  d3.selectAll("svg > *").remove();
+
+  let thresh = 1 * document.getElementById("thresh").value,
+      mult = 1 * document.getElementById("multiplier").value;
+
+  svg.append("g")
+    .selectAll("path")
+    .data(basegeo.features)
+    .join("path")
+      .attr("fill", d => {
+        let statewide = census.statewide[selectCol].percent;
+        let pct = census[d.properties.GEOID][selectCol].percent;
+        if (!pct) {
+          return "#fff";
+        }
+        if (statewide < thresh / 100) {
+          if (activeRule === "multiply") {
+            pct = Math.min(1, pct * mult);
+          } else if (activeRule === "statewide") {
+            pct = (pct > statewide) ? 1 : 0;
+          } else if (activeRule === "max") {
+            pct = census[d.properties.GEOID][selectCol].percent / census.statewide[selectCol].max_percent;
+          }
+          return `rgba(${255 * (1 - pct)}, ${255 * (1 - pct)}, ${(255 - 139) * (1 - pct) + 139}, 0.8)`;
+        } else {
+          return `rgba(${(255 - 139) * (1 - pct) + 139}, ${255 * (1 - pct)}, ${255 * (1 - pct)}, 0.8)`;
+        }
+      })
+      .attr("stroke", "white")
+      .attr("d", d => {
+        return path(d)
+      })
+    .append("title")
+      .text(d => d.properties.GEOID);
+}
+
+function selectRule(opt) {
+  activeRule = opt;
+  drawmap();
+}
+
+fetch("https://api.census.gov/data/2019/acs/acs5?get=" + cols.join(",") + "&for=tract:*&in=state:33&key=" + key).then(res => res.json()).then((rows) => {
+  let popmax = 0,
+      state = rows[0].indexOf("state"),
+      county = rows[0].indexOf("county"),
+      tract = rows[0].indexOf("tract");
+  rows.forEach((row) => {
+    let mypop = row[rows[0].indexOf("B03002_001E")] * 1;
+    if (mypop) {
+      popmax = Math.max(popmax, mypop);
+    }
+  });
+
+  cols.forEach((col) => {
+    census.statewide[col] = { num: 0, max: 0, max_percent: 0 };
+  });
+
+  rows.forEach((row) => {
+    let fips = [row[state], row[county], row[tract]].join("");
+    census[fips] = {};
+    cols.forEach((col) => {
+      let mypop = row[rows[0].indexOf(col)] * 1;
+      if (!isNaN(mypop)) {
+        let pct = mypop / row[rows[0].indexOf("B03002_001E")];
+
+        census.statewide[col].num += mypop;
+        census.statewide[col].max = Math.max(mypop, census.statewide[col].max);
+        if (!isNaN(pct)) {
+          census.statewide[col].max_percent = Math.max(pct, census.statewide[col].max_percent);
+        }
+
+        census[fips][col] = {
+          num: mypop,
+          percent: col === "B03002_001E" // total pop?
+            ? mypop / popmax
+            : pct
+        };
+      }
+    })
+  });
+
+  cols.forEach((col) => {
+    census.statewide[col].percent = census.statewide[col].num / census.statewide["B03002_001E"].num;
+  });
+
+  fetch("./southnh.geojson").then(res => res.json()).then((geodata) => {
+    basegeo = geodata;
+    drawmap();
+  });
+});
+    </script>
+  </body>
+</html>
